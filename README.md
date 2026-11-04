@@ -1,10 +1,16 @@
-# Expert AI Harness, from scratch
+# Advanced AI Harness, from scratch
 
-Builds upon [Advanced AI Harness](https://github.com/Heuristic-Analyst/Advanced-AI-Harness)
+Builds upon [Basic AI Harness](https://github.com/Heuristic-Analyst/Basic-AI-Harness)
 
-run either "main.py" for cli version or "gui.py" (files are not shown in gui, still in the shared folder).
+run either "main.py" for cli version or "gui.py" (files are not shown in gui, still in the shared folder), or "serve.py" for no window at all (only a terminal and your clients, e.g. Telegram).
 
-Difference to Advanced AI Harness version:
-- Build communication layer between program and gui, so other "tools" can also use it, such as a telegram tool, so if one wants one can chat with it via telegram. all the changes, texts, commands, etc are visible everywhere at once
-- Building a github tool so it can publish its projects on its own github account
-- Also bulding a swarm cabablility, so it can spin up its own subagents to divide work in parallel and work faster.
+Difference to Basic AI Harness version:
+- has a gui
+- agent can choose a sandbox (Podman), has a shared folder, mounts to Shared Folder/Common for exchange of files and Shared Folder/Notebook_Engine (read-only) to run Python Notebooks (tools included)
+- can create new Project folders and mount several of them at once
+- read-only projects (`READONLY_PROJECTS` in config.py): the agent can use them, never change them
+- a browser: the `browser` sandbox + the `Browser` project, built on [agent-browser](https://github.com/vercel-labs/agent-browser). you can watch it live and take over (see Shared Folder/Browser/README.md)
+- per-sandbox settings you write and the agent can't change: memory, cpus, GPU, a "view" port (Sandboxes/README.md)
+- files in Shared Folder can't be executed directly, only through an interpreter (python x.py), and only inside the sandbox
+- network can only be enabled or disabled by the user using /sandbox net on or off
+- an interface layer (`interface/`): the window, Telegram and anything else are clients of it, and every client sees everything live. a new client is one file in `clients/`, nothing else changes (interface/README.md, clients/README.md)

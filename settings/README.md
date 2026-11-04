@@ -5,6 +5,7 @@ How the program talks to the model. Everything here is read once, when the progr
 | File | What it is |
 |---|---|
 | `model.json` | Which model, and how to use it. |
+| `telegram.json` | The Telegram client: who may use it, and how much it shows (`clients/README.md`). |
 
 ## model.json
 
@@ -45,3 +46,12 @@ The key's name is always the part before the `/` in capitals, plus `_API_KEY`. T
 
 - **JSON is strict.** `true` and `false` in lowercase, text in double quotes `"..."`, a comma between settings but none after the last one, and no comments.
 - **Tokens, not characters.** `ContextLimit` is the only size counted in tokens, because a model's window is counted in tokens. The sizes for long tool results (`RESULT_LIMIT` and the others in `config.py`) are counted in characters, so they work the same with every model.
+
+## telegram.json
+
+| Setting | Default | What it does |
+|---|---|---|
+| `Owner` | `0` | Your own Telegram user id: the only account the bot listens to. `0`: it only tells whoever writes their id, and nothing reaches the agent. |
+| `History` | `30` | How many messages of a conversation are loaded into the chat when it is opened. Telegram takes about one per second, so more means a longer wait. |
+| `StatusEvery` | `2` | Seconds between two changes of the status message. Faster changes are skipped, only the newest is shown. |
+| `ApiUrl` | Telegram's | Only for your own Bot API server, or a fake one for testing. |

@@ -1,36 +1,31 @@
 #!/usr/bin/env python3
-"""gui.py - a window in front of the harness. nothing in the harness itself is changed.
+"""gui.py - a window in front of the harness. one client of the Hub (interface/hub.py), like Telegram.
 
 run it from this folder:
     python gui.py
 
-it does exactly what main.py does when it starts (soul, tools, skills, locks, the sandbox, a first
-conversation), and then carries your messages to agent.ask() and paints what comes back.
-
-the harness only ever talks to a terminal, with print(). so this file gives classes/agent.py,
-classes/sandbox.py and functions/commands.py a print() of its own, which puts the text into a queue
-instead of the terminal (sys.stdout and sys.stderr are caught too, so nothing gets lost). the window
-empties that queue and draws it:
+the Hub starts the harness and owns everything: the agent, the conversations, the sandbox. this file
+never touches them. it hands what you do to the Hub, and draws the events that come back, and those
+are the same events every other client gets. so what happens in Telegram shows up here too.
+(sys.stdout and sys.stderr are caught into a queue, so nothing gets lost.) what it draws:
 
     * your message, in a block
     * the answer, as markdown, while it streams in
     * the thinking, and every tool call, as ONE line - click the line to open it
     * a note for everything else the program says (retries, checkpoints, errors)
 
-the /commands are done here, in the window; main.py's chat loop is not used at all:
-    /new   /open [name]   /list   /rename [old] <new>   /delete [name]   /sandbox ...   /help   /exit
+the /commands go to the Hub too. only these stay here, because they need the window: /open with no name
+(a little list to pick from), asking before /delete, and /exit. main.py's chat loop is not used at all.
 
 the conversations on the left: click one to continue it. the pin (top left) keeps the list open;
 unpinned, it slides in when the mouse touches the left edge.
 
-a conversation you open is drawn from its log.jsonl, not from state.json: the log is only ever added to, so
-you see everything that was ever said, also across a checkpoint (where the model's own context is emptied
+a conversation you open is drawn from its log.jsonl (the Hub reads it), not from state.json: the log is only ever
+added to, so you see everything that was ever said, also across a checkpoint (where the model's own context is emptied
 and replaced by its notes - those show up as a folded "checkpoint" line).
 """
 
 import io
-import json
-import os
 import re
 import sys
 import time
@@ -39,6 +34,11 @@ import itertools
 import threading
 import traceback
 import webbrowser
+
+from interface.hub import Hub
+from interface.clients import start_clients
+
+NAME = "gui"            # who we are, for the Hub
 
 try:
     import tkinter as tk
@@ -283,27 +283,16 @@ def render_markdown(t, md, extra=()):
 class Gui:
     def __init__(self, root):
         self.root = root
-        self.q = queue.Queue()           # the worker thread(s) put what happens in here, the window reads it
+        self.q = queue.Queue()           # what this window itself has to say: stdout, its own notes
+        self.hub = Hub()                 # the harness, and everything that happens in it
+        self.events = self.hub.subscribe()   # the events: the same ones every other client gets
 
-        # the harness, filled in by _boot()
-        self.Agent = None
-        self.sandbox = None
-        self.workspace = None
-        self.soul = ""
-        self.tools = {}
-        self.skills = {}
-        self.conv_mod = None
-        self.locks = None
         self.model = ""
-        self.effort = None
         self.limit = 0
-        self.config = None
         self.current = None
-        self.agent = None
 
         # what the window is doing
         self.busy = False
-        self.opening = False
         self.picking = False
         self.pinned = True
         self.side_x = -SIDE_W
@@ -322,8 +311,8 @@ class Gui:
         self.block_n = 0
         self.pending_tools = []          # tool blocks waiting for their result, in the order they were asked
         self.live = None                 # the answer or thinking block that is streaming in right now
+        self.held = []                   # notes that came while it streams
         self.conv_names = []
-        self.count_cache = {}            # conversation -> (mtime, size) of its state.json, and how many messages
 
         self._make_fonts()
         self._capture_output()
@@ -371,19 +360,6 @@ class Gui:
         self.real_out, self.real_err = sys.stdout, sys.stderr
         sys.stdout = _Stream(self.q, "out")
         sys.stderr = _Stream(self.q, "err")
-
-    def hooked_print(self, *args, sep=" ", end="\n", file=None, flush=False):
-        """what print() becomes inside the harness modules: the same call, but into the queue"""
-        if sep is None:
-            sep = " "
-        self.q.put(("print", sep.join(str(a) for a in args), end))
-
-    def _hook_modules(self):
-        """every module of the harness that prints gets its own print(), which comes here"""
-        for name in ("classes.agent", "classes.sandbox", "functions.commands", "functions.conversations"):
-            module = sys.modules.get(name)
-            if module is not None:
-                module.print = self.hooked_print
 
     def _tk_error(self, kind, value, tb):
         """a crash inside a click must show: in the terminal, and in the window"""
@@ -458,41 +434,14 @@ class Gui:
         link_font = self.F["small"].copy()
         link_font.configure(underline=True)
         self.view_url = None
-        self.view_hosts = {}                   # container -> its hostname ("" = unknown, None = being asked)
         self.view_lbl = tk.Label(wrap, text="", bg=BG, fg=LINK, font=link_font, cursor="hand2")
         self.view_lbl.bind("<Button-1>", lambda e: self.view_url and webbrowser.open(self.view_url))
         self.root.after(1000, self._update_view)
 
-    def _browser_open(self):
-        """is the browser open in this instance's sandbox right now? reads Browser/tmp/open.json (see browser.py). the
-        container's hostname is asked from podman once per container, off the window's thread"""
-        sandbox = self.workspace
-        container = sandbox.container
-        project = sandbox.mounted("Browser")
-        if not container or not project:
-            return False
-        if container not in self.view_hosts:
-            self.view_hosts[container] = None
-
-            def ask():
-                code, out = sandbox.podman("inspect", "--format", "{{.Config.Hostname}}", container, timeout=60)
-                self.view_hosts[container] = out.strip() if code == 0 else ""
-            threading.Thread(target=ask, daemon=True).start()
-        host = self.view_hosts.get(container)
-        if not host:                                   # still asking, or podman couldn't say
-            return False
-        try:
-            with open(os.path.join(sandbox.shared_dir, project, "tmp", "open.json"), encoding="utf-8") as f:
-                return json.load(f).get("host") == host
-        except (OSError, ValueError, AttributeError):  # no file (closed), or half written: not open (yet)
-            return False
-
     def _update_view(self):
         """show, change or hide the view link in the footer: only while the browser is open"""
         try:
-            url = self.workspace.view_url() if self.workspace else None
-            if url and not self._browser_open():
-                url = None
+            url = self.hub.browser_view() if self.ready else None
         except BaseException:
             url = None
         try:
@@ -726,93 +675,21 @@ class Gui:
 
     # --- starting the harness --------------------------------------------------
     def _boot(self):
-        """the whole start of main.py, in a thread (podman can take a while), then "ready" into the queue"""
-        self.q.put(("note", "starting the harness…"))
-        try:
-            import config
-            from config import (SOUL_FILE, TOOLS_DIR, SKILLS_DIR, SANDBOXES_DIR, SHARED_DIR, COMMON, ENGINE,
-                                INSTANCE, CONTAINER_CMD, SANDBOX_MEMORY, SANDBOX_CPUS, SANDBOX_PIDS,
-                                COMMAND_TIMEOUT, MODEL, EFFORT, CONTEXT_LIMIT, READONLY_PROJECTS)
-            from classes.agent import Agent
-            from classes.sandbox import Sandbox
-            from functions.read_text import read_text
-            from functions.load_tools import load_tools
-            from functions.load_skills import load_skills
-            from functions import conversations, locks
-        except BaseException:
-            self.q.put(("fatal", "could not start the harness:\n\n" + traceback.format_exc()))
-            return
+        """the Hub starts the harness, in a thread (podman can take a while), then the clients in clients/"""
+        if self.hub.start():
+            start_clients(self.hub)
 
-        self._hook_modules()
-
-        try:
-            soul = read_text(SOUL_FILE) or "You are a helpful assistant."
-            tools = load_tools(TOOLS_DIR)
-            skills = load_skills(SKILLS_DIR)
-
-            locks.start()
-            sandbox = Sandbox(SANDBOXES_DIR, SHARED_DIR, COMMON, ENGINE, INSTANCE, command=CONTAINER_CMD,
-                              memory=SANDBOX_MEMORY, cpus=SANDBOX_CPUS, pids=SANDBOX_PIDS,
-                              timeout=COMMAND_TIMEOUT, readonly=READONLY_PROJECTS)
-            import atexit
-            atexit.register(locks.stop)
-            atexit.register(sandbox.shutdown)
-
-            workspace = None
-            if sandbox.available():
-                workspace = sandbox
-                sandbox.cleanup()
-            else:
-                for name in [n for n, tool in tools.items()
-                             if tool["folder"].split("/")[0] in ("sandbox", "notebook")]:
-                    tools.pop(name)
-                skills.pop("sandbox", None)
-                skills.pop("notebook", None)
-                skills.pop("browser", None)
-            if not skills:
-                tools.pop("load_skill", None)
-
-            self.config = config
-            self.Agent = Agent
-            self.sandbox = sandbox
-            self.workspace = workspace
-            self.soul = soul
-            self.tools = tools
-            self.skills = skills
-            self.conv_mod = conversations
-            self.locks = locks
-            self.model = MODEL
-            self.effort = EFFORT
-            self.limit = CONTEXT_LIMIT
-            self.current = conversations.new_name()
-            self.agent = self._new_agent(self.current)
-        except BaseException:
-            self.q.put(("fatal", "could not start the harness:\n\n" + traceback.format_exc()))
-            return
-
-        self.q.put(("ready", None))
-
-    def _new_agent(self, name, messages=None):
-        """an agent for one conversation, exactly as main.py makes one - but streaming and with the thinking
-        printed, because the window shows both while they arrive"""
-        conv = self.conv_mod
-        return self.Agent(self.model, self.config.API_KEY, instructions=self.soul,
-                          stream=True, effort=self.effort, print_thinking=True,
-                          tools=self.tools, skills=self.skills, conversation=messages,
-                          log_file=conv.log_of(name), results_dir=conv.results_of(name),
-                          checkpoint_file=conv.checkpoint_of(name), context_limit=self.limit,
-                          sandbox=self.workspace)
-
-    def _on_ready(self):
+    def _on_ready(self, event):
         self.ready = True
+        self.model, self.limit, self.current = event["model"], event["limit"], event["name"]
         self.model_lbl.configure(text=self.model)
-        sandbox_note = ("sandbox: " + (", ".join(self.sandbox.names()) or "none")) if self.workspace \
-            else "no podman: no sandbox"
-        self.q.put(("note", "ready  ·  model " + self.model + "  ·  tools " + str(len(self.tools))
-                    + "  ·  skills " + str(len(self.skills)) + "  ·  " + sandbox_note))
-        if not self.workspace:
-            self.q.put(("note", "podman is not installed or not running, so the agent cannot run code. "
-                                "(mac/windows: podman machine start, then start this again)"))
+        sandboxes = event["sandboxes"]
+        sandbox_note = "no podman: no sandbox" if sandboxes is None else "sandbox: " + (", ".join(sandboxes) or "none")
+        self._note("ready  ·  model " + self.model + "  ·  tools " + str(event["tools"])
+                   + "  ·  skills " + str(event["skills"]) + "  ·  " + sandbox_note)
+        if sandboxes is None:
+            self._note("podman is not installed or not running, so the agent cannot run code. "
+                       "(mac/windows: podman machine start, then start this again)")
         self._set_input(True)
         self._update_tokens()
         self._refresh_sidebar()
@@ -820,42 +697,17 @@ class Gui:
         self.entry.focus_set()
 
     # --- conversations ---------------------------------------------------------
-    def _pretty(self, name):
-        """a folder name -> a line for the list"""
-        shown = name
-        m = re.match(r"^(\d{4})(\d{2})(\d{2})-(\d{2})-(\d{2})-(\d{2})", name)
-        if m:
-            shown = "%s-%s-%s  %s:%s" % (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5))
-        try:
-            path = self.conv_mod.state_of(name)
-            stat = os.stat(path)
-            key = (stat.st_mtime, stat.st_size)
-            cached = self.count_cache.get(name)
-            if cached and cached[0] == key:
-                count = cached[1]
-            else:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    count = f.read().count('"role"')      # one per message, no json needed
-                self.count_cache[name] = (key, count)
-            if count:
-                shown += "   · " + str(count)
-        except BaseException:
-            pass
-        return shown
-
     def _refresh_sidebar(self):
-        if not self.conv_mod:
+        if not self.ready:
             return
         try:
-            names = self.conv_mod.names()
+            names = self.hub.conversations()
         except BaseException:
             names = []
-        if self.current and self.current not in names:
-            names = names + [self.current]
         self.conv_names = names
         self.lb.delete(0, "end")
         for name in names:
-            self.lb.insert("end", "  " + self._pretty(name))
+            self.lb.insert("end", "  " + self.hub.pretty(name))
         if self.current in names:
             i = names.index(self.current)
             self.lb.selection_clear(0, "end")
@@ -903,60 +755,25 @@ class Gui:
         return "break"
 
     def _open(self, name):
-        if not self.ready:
-            return
-        if self.busy or self.opening or self.drawing:
-            self.q.put(("note", "one moment: the agent is still working in " + str(self.current)))
-            return
-        if name == self.current:
-            return
-        self.opening = True
-        self.q.put(("note", "opening " + name + " …"))
+        if self.ready and not self.drawing and name != self.current:
+            self.hub.open_conversation(name, NAME)     # the "conversation" event does the rest, in every client
 
-        def work():
-            try:
-                data = self.conv_mod.load(name)          # what the model carries right now (and its size)
-                messages = data.get("messages") or []
-                agent = self._new_agent(name, messages)
-                agent.tokens = data.get("tokens", 0)
-                history = self._read_log(name)           # everything ever said, which is more than that
-                if history is None:
-                    history = messages
-                self.q.put(("opened", (name, agent, history)))
-            except BaseException:
-                self.q.put(("error", "could not open " + name + ":\n" + traceback.format_exc()))
-                self.q.put(("opened_none", None))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _on_opened(self, payload):
-        name, agent, history = payload
-        self.current, self.agent = name, agent
-        self.opening = False
-        self.history = history
-        self._update_tokens()
-        self._refresh_sidebar()
-        self._draw_history(max(0, len(history) - HISTORY_SHOWN))
-        self._set_input(True)
-
-    def _new(self):
-        if not self.ready:
-            return
-        if self.busy or self.opening or self.drawing:
-            self.q.put(("note", "one moment: the agent is still working in " + str(self.current)))
-            return
-        try:
-            self.current = self.conv_mod.new_name()
-            self.agent = self._new_agent(self.current)
-        except BaseException:
-            self.q.put(("error", "could not start a new conversation:\n" + traceback.format_exc()))
-            return
-        self.history = []
-        self._clear_chat()
-        self._rule("new conversation")
+    def _on_conversation(self, event):
+        """the open conversation changed, in any client"""
+        self.current = event["name"]
+        self.history = event["history"]
+        if event["why"] == "opened":
+            self._draw_history(max(0, len(self.history) - HISTORY_SHOWN))
+        else:
+            self._clear_chat()
+            self._rule("new conversation")
         self._update_tokens()
         self._refresh_sidebar()
         self.entry.focus_set()
+
+    def _new(self):
+        if self.ready and not self.drawing:
+            self.hub.new_conversation(NAME)
 
     def _selected_name(self):
         """the conversation highlighted in the list (the open one, if nothing is highlighted)"""
@@ -981,20 +798,8 @@ class Gui:
         self.hover_until = time.time() + 60
         new = simpledialog.askstring("rename", "new name for '" + name + "':", parent=self.root)
         self.hover_until = time.time() + 0.3
-        if not new:
-            return
-        new = new.strip()
-        problem = self.conv_mod.rename(name, new)
-        if problem:
-            self.q.put(("error", problem))
-            return
-        if name == self.current:                     # renamed the one we are in: its files live there now
-            self.current = new
-            self.agent.log_file = self.conv_mod.log_of(new)
-            self.agent.results_dir = self.conv_mod.results_of(new)
-            self.agent.checkpoint_file = self.conv_mod.checkpoint_of(new)
-        self.q.put(("note", "renamed " + name + " -> " + new))
-        self._refresh_sidebar()
+        if new and new.strip():
+            self.hub.rename_conversation(name, new.strip(), NAME)
 
     def _delete(self, name):
         if self.busy:
@@ -1003,28 +808,8 @@ class Gui:
         yes = messagebox.askyesno("delete", "Delete '" + name + "' with everything in it?\n"
                                             "There is no undo.", parent=self.root)
         self.hover_until = time.time() + 0.3
-        if not yes:
-            return
-        problem = self.conv_mod.delete(name)
-        if problem:
-            self.q.put(("error", problem))
-            return
-        self.q.put(("note", "deleted " + name))
-        if name == self.current:
-            self._new()
-        else:
-            self._refresh_sidebar()
-
-    def _show_list(self):
-        names = self.conv_mod.names() if self.conv_mod else []
-        lines = ["saved conversations:"]
-        for name in names:
-            lines.append(("  * " if name == self.current else "    ") + self._pretty(name))
-        if not names:
-            lines.append("  none yet")
-        self.q.put(("note", "\n".join(lines)))
-        if not self.pinned:                      # /list means "show me": bring the list in for a moment
-            self.hover_until = time.time() + 2.5
+        if yes:
+            self.hub.delete_conversation(name, NAME)
 
     # --- typing -----------------------------------------------------------------
     def _readonly(self, event):
@@ -1135,38 +920,17 @@ class Gui:
         return "break"
 
     def _send(self):
-        if not self.ready or self.busy or self.opening or self.drawing:
+        if not self.ready or self.drawing:
             return
         text = self.entry.get("1.0", "end-1c").strip()
         if not text:
             return
-        self.entry.delete("1.0", "end")
-        if text.startswith("/"):
+        if text.startswith("/"):                # a command also works while the agent is working (/sandbox net off)
+            self.entry.delete("1.0", "end")
             self._command(text)
-            return
-        self._user_message(text)
-        self.busy = True
-        self._set_input(False)
-        threading.Thread(target=self._work, args=(text, self.agent, self.current), daemon=True).start()
-
-    def _work(self, text, agent, current):
-        """the agent's turn, off the window's thread. everything it prints comes back through the queue"""
-        try:
-            notes = self.workspace.take_notes() if self.workspace else []
-            if notes:
-                text = "\n".join(notes) + "\n\n" + text
-            agent.ask(text)
-        except BaseException as e:
-            message = type(e).__name__ + ": " + str(e)
-            if len(message) > 900:
-                message = message[:900] + " …"
-            self.q.put(("error", message))
-        finally:
-            try:
-                self.conv_mod.save(current, agent)
-            except BaseException:
-                self.q.put(("error", "could not save the conversation:\n" + traceback.format_exc()))
-            self.q.put(("done", None))
+        elif not self.busy:
+            self.entry.delete("1.0", "end")
+            self.hub.send(text, NAME)           # it is drawn when the event comes back, like one from any other client
 
     def _set_input(self, on):
         # the box stays open while the agent works, so you can already write your next message. only sending waits:
@@ -1190,29 +954,20 @@ class Gui:
                 item = self.q.get_nowait()
             except queue.Empty:
                 break
-            kind = item[0]
             try:
-                if kind == "print":
-                    self._on_print(item[1], item[2])
-                elif kind == "raw":
+                if item[0] == "raw":
                     self._on_raw(item[1])
-                elif kind == "note":
-                    self._note(item[1])
-                elif kind == "error":
-                    self._on_error(item[1])
-                elif kind == "fatal":
-                    self._on_fatal(item[1])
-                elif kind == "ready":
-                    self._on_ready()
-                elif kind == "opened":
-                    self._on_opened(item[1])
-                elif kind == "opened_none":
-                    self.opening = False
-                    self._set_input(True)
-                elif kind == "done":
-                    self._on_done()
-                elif kind == "status":
-                    self._update_status()
+            except tk.TclError:
+                pass
+            except BaseException:
+                traceback.print_exc(file=self.real_err)
+        for _ in range(500):
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._on_event(event)
             except tk.TclError:
                 pass
             except BaseException:
@@ -1220,38 +975,48 @@ class Gui:
         if self.live and self.live.get("dirty") and not self._has_selection():
             self._flush_live()        # (a selection: wait, so what was selected stays selected)
 
-    def _on_print(self, text, end):
-        """one print() from the harness, sorted into what it is"""
-        stripped = text.strip("\n").strip()
-
-        if end and stripped.startswith("TOOL CALL: "):
-            self._end_block()
-            payload = stripped[len("TOOL CALL: "):]
-            name, _, rest = payload.partition("(")
-            args = rest[:-1] if rest.endswith(")") else rest
-            self._add_tool(name.strip(), args)
-            return
-
-        if end and stripped.startswith("TOOL RESULT: "):
-            payload = stripped[len("TOOL RESULT: "):]
-            name, sep, result = payload.partition(" -> ")
-            self._add_tool_result(result if sep else payload)
-            return
-
-        if end and stripped == "THINKING:":
-            self._begin("thinking")
-            return
-        if end and stripped == "ANSWER:":
+    def _on_event(self, event):
+        """one event from the Hub, whichever client caused it. see interface/README.md"""
+        kind = event["type"]
+        if kind == "answer_piece" or kind == "thinking_piece":
+            self._piece(event["text"])
+        elif kind == "answer_start":
             self._begin("answer")
-            return
-        if end and not stripped:                        # print(): the answer is finished
+        elif kind == "thinking_start":
+            self._begin("thinking")
+        elif kind == "block_end":
             self._end_block()
-            return
-        if end:                                         # a whole line from the program: a note
+        elif kind == "tool_call":
             self._end_block()
-            self._note(stripped)
-            return
-        self._piece(text)                               # a piece of the answer / the thinking
+            self._add_tool(event["name"], event["args"])
+        elif kind == "tool_result":
+            self._add_tool_result(event["result"])
+        elif kind == "user_message":
+            self._finish_drawing()
+            self._user_message(event["text"], event["source"])
+        elif kind == "command":
+            if event["source"] != NAME:         # your own command is what you just typed
+                self._end_block()
+                self._note("· " + event["source"] + ": " + event["text"])
+        elif kind == "note" or kind == "reply":
+            self._note(event["text"])
+        elif kind == "error":
+            self._on_error(event["text"])
+        elif kind == "busy":
+            self._on_busy(event["on"])
+        elif kind == "conversation":
+            self._on_conversation(event)
+        elif kind == "renamed":
+            self.current = event["name"]
+            self._refresh_sidebar()
+        elif kind == "list_changed":
+            self._refresh_sidebar()
+        elif kind == "status":
+            self._update_status()
+        elif kind == "ready":
+            self._on_ready(event)
+        elif kind == "fatal":
+            self._on_fatal(event["text"])
 
     def _on_raw(self, s):
         """anything written straight to stdout or stderr: whole lines become notes"""
@@ -1267,10 +1032,8 @@ class Gui:
             self.rawbuf = self.rawbuf[-2000:]
 
     def _on_error(self, text):
-        self.busy = False
         self._end_block()
         self._error_block(text)
-        self._set_input(True)
 
     def _on_fatal(self, text):
         self._end_block()
@@ -1282,17 +1045,22 @@ class Gui:
         except BaseException:
             pass
 
-    def _on_done(self):
-        self.busy = False
-        self._end_block()
-        self._set_input(True)
-        self._update_tokens()
-        self._refresh_sidebar()
-        self._update_status()
+    def _on_busy(self, on):
+        """the agent started or stopped working, for any client"""
+        self.busy = on
+        self._set_input(not on)
+        if not on:
+            self._end_block()
+            self._update_tokens()
+            self._refresh_sidebar()
+            self._update_status()
 
     # --- drawing pieces ---------------------------------------------------------
     def _note(self, text):
-        if not text.strip() or self.live:
+        if not text.strip():
+            return
+        if self.live:                       # an answer is streaming in: it comes right after it
+            self.held.append(text)
             return
         self.txt.insert("end-1c", text.rstrip("\n") + "\n", ("note",))
         self._follow_bottom()
@@ -1407,11 +1175,11 @@ class Gui:
         self.txt.insert("end-1c", "\n", ("body",))
         self._follow_bottom()
 
-    def _user_message(self, text):
+    def _user_message(self, text, source=NAME):
         self._end_block()
         w = _Writer(self.txt)
         w.put("\n", ("body",))
-        w.put("You", ("you",))
+        w.put("You" if source == NAME else "You  ·  " + source, ("you",))
         w.put("\n", ("body",))
         for line in text.split("\n"):
             if line.strip():
@@ -1481,39 +1249,11 @@ class Gui:
             self.txt.insert("end-1c", "\n", ("body",))
         self.live = None
         self._follow_bottom()
+        held, self.held = self.held, []
+        for text in held:
+            self._note(text)
 
     # --- showing a conversation -------------------------------------------------
-    def _read_log(self, name):
-        """everything ever said in a conversation, out of log.jsonl (which is only ever added to).
-        None if there is no log at all. this is more than state.json has: a checkpoint empties the
-        conversation to make room, but never the log"""
-        path = self.conv_mod.log_of(name)
-        if not os.path.isfile(path):
-            return None
-        entries = []
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except ValueError:
-                    continue                        # a half written line (the program died mid write)
-                kind = item.get("kind")
-                if kind == "system":
-                    text = item.get("content") or ""
-                    if "<checkpoint>" in text:      # the conversation was emptied here: show the note
-                        start = text.find("<checkpoint>") + len("<checkpoint>")
-                        end = text.find("</checkpoint>")
-                        body = text[start:end].strip() if end > start else text
-                        entries.append({"role": "_checkpoint", "content": body})
-                elif kind == "message":
-                    message = item.get("message") or {}
-                    if message.get("role"):
-                        entries.append(message)
-        return entries
-
     def _draw_history(self, start, anchor=None):
         """draw a conversation from entry `start` to the end, a few entries at a time, so the window answers
         while it happens. anchor: an entry to keep in view afterwards (used when bringing earlier ones in)"""
@@ -1567,6 +1307,18 @@ class Gui:
         except tk.TclError:
             pass
 
+    def _finish_drawing(self):
+        """a message from another client is coming while a conversation is still being drawn: finish that first, so
+        everything stays in order"""
+        job = self.draw
+        while job and job["i"] < job["n"]:
+            self._draw_entry(self.history[job["i"]])
+            job["i"] += 1
+        if job:
+            self.draw = None
+            self.drawing = False
+            self.follow = True
+
     def _draw_entry(self, m):
         """one message of a saved conversation: the same shapes the window draws while the agent works"""
         role = m.get("role")
@@ -1594,12 +1346,7 @@ class Gui:
 
     # --- the counters in the top bar -------------------------------------------
     def _update_tokens(self):
-        used = 0
-        if self.agent is not None:
-            try:
-                used = self.agent.size()
-            except BaseException:
-                used = getattr(self.agent, "tokens", 0) or 0
+        used = self.hub.tokens()
         limit = self.limit or 0
         frac = (float(used) / limit) if limit else 0.0
         frac = max(0.0, min(1.0, frac))
@@ -1616,53 +1363,30 @@ class Gui:
             self.tok_lbl.configure(text=short_num(used) + " tokens")
 
     def _update_status(self):
-        text = ""
-        if self.workspace:
-            try:
-                text = self.workspace.status_line()
-            except BaseException:
-                text = ""
-        if not text:
-            text = "no sandbox"
-        self.status_lbl.configure(text=text)
+        self.status_lbl.configure(text=self.hub.sandbox_line())
 
     # --- /commands --------------------------------------------------------------
     def _command(self, text):
+        """almost everything goes to the Hub, so every client sees it. only what needs this window is done here"""
         words = text.split()
         cmd = words[0].lower()
-
         if cmd in ("/exit", "/quit"):
             self._quit()
-        elif cmd == "/new":
-            self._new()
-        elif cmd == "/list":
-            self._show_list()
-        elif cmd == "/open":
-            self._cmd_open(words)
-        elif cmd == "/rename":
-            self._cmd_rename(words)
-        elif cmd == "/delete":
-            self._cmd_delete(words)
-        elif cmd == "/sandbox":
-            self._cmd_sandbox(words)
-        elif cmd == "/help":
-            self._help()
-        else:
-            self._note("command not found: " + words[0] + "    (try /help)")
-
-    def _cmd_open(self, words):
-        name = words[1] if len(words) > 1 else None
-        if name is None:
+        elif cmd == "/open" and len(words) == 1:
             self._picker()                      # /open with nothing after it: pick one from a little list
-            return
-        if not self.conv_mod.exists(name):
-            self._note("no conversation called '" + name + "'. /list shows them")
-            return
-        self._open(name)
+        elif cmd == "/delete" and words[-1:] != ["yes"]:
+            self._cmd_delete(words)
+        else:
+            self.hub.send(text, NAME)
+            if cmd == "/help":
+                self._note("/exit or /quit leaves. the mouse: click a conversation on the left to continue it (the ☰ up "
+                           "there pins that list),\nclick a line with ▸ to open the thinking or a tool call.")
+            elif cmd == "/list" and not self.pinned:   # /list means "show me": bring the list in for a moment
+                self.hover_until = time.time() + 2.5
 
     def _picker(self):
         """a small window with every saved conversation: double click one to open it"""
-        names = self.conv_mod.names()
+        names = self.hub.saved()
         if not names:
             self._note("no saved conversations yet")
             return
@@ -1686,7 +1410,7 @@ class Gui:
         bar.pack(side="right", fill="y")
         lb.configure(yscrollcommand=bar.set)
         for name in names:
-            lb.insert("end", "  " + self._pretty(name))
+            lb.insert("end", "  " + self.hub.pretty(name))
         if self.current in names:
             lb.selection_set(names.index(self.current))
             lb.see(names.index(self.current))
@@ -1725,88 +1449,16 @@ class Gui:
         except tk.TclError:
             pass
 
-    def _cmd_rename(self, words):
-        if len(words) == 2:
-            old, new = self.current, words[1]
-        elif len(words) >= 3:
-            old, new = words[1], words[2]
-        else:
-            self._note("usage: /rename <new name>   or   /rename <old> <new>")
-            return
-        problem = self.conv_mod.rename(old, new)
-        if problem:
-            self._note(problem)
-            return
-        if old == self.current:
-            self.current = new
-            self.agent.log_file = self.conv_mod.log_of(new)
-            self.agent.results_dir = self.conv_mod.results_of(new)
-            self.agent.checkpoint_file = self.conv_mod.checkpoint_of(new)
-        self._note("renamed " + old + " -> " + new)
-        self._refresh_sidebar()
-
     def _cmd_delete(self, words):
+        """the window asks with a dialog, so /delete gets its "yes" here"""
         name = words[1] if len(words) > 1 else self.current
-        if not self.conv_mod.exists(name):
+        if not self.hub.exists(name):
             self._note("no conversation called '" + name + "'")
-            return
-        if not messagebox.askyesno("delete", "Delete '" + name + "' with everything in it?\nNo undo.",
-                                   parent=self.root):
+        elif messagebox.askyesno("delete", "Delete '" + name + "' with everything in it?\nNo undo.",
+                                 parent=self.root):
+            self.hub.send("/delete " + name + " yes", NAME)
+        else:
             self._note("not deleted")
-            return
-        problem = self.conv_mod.delete(name)
-        if problem:
-            self._note(problem)
-            return
-        self._note("deleted " + name)
-        if name == self.current:
-            self._new()
-        else:
-            self._refresh_sidebar()
-
-    def _cmd_sandbox(self, words):
-        if not self.workspace:
-            self._note("podman is not installed or not running, so there are no sandboxes")
-            return
-        if len(words) == 1:
-            self._run_bg(self.workspace.overview)
-        elif words[1] == "net" and len(words) > 2 and words[2] in ("on", "off"):
-            self._run_bg(lambda: self.workspace.user_network(words[2] == "on"))
-        elif words[1] == "close":
-            self._run_bg(self.workspace.user_close)
-        elif words[1] == "shell":
-            self._note("the interactive root shell only works in main.py in a terminal")
-        else:
-            self._note("usage: /sandbox   |   /sandbox net on|off   |   /sandbox close")
-
-    def _run_bg(self, fn):
-        def work():
-            try:
-                self.q.put(("note", fn()))
-            except BaseException:
-                self.q.put(("error", traceback.format_exc()))
-            self.q.put(("status", None))
-        threading.Thread(target=work, daemon=True).start()
-
-    def _help(self):
-        lines = [
-            "commands:",
-            "  /new                     start a new conversation",
-            "  /open <name>             continue a saved one (or /open, and pick)",
-            "  /list                    show the saved conversations",
-            "  /rename <new>            rename this conversation",
-            "  /rename <old> <new>      rename another one",
-            "  /delete [name]           delete a conversation, with everything in it",
-            "  /sandbox                 what runs in the sandbox, and every sandbox",
-            "  /sandbox net on|off      the sandbox's internet",
-            "  /sandbox close           stop the sandbox",
-            "  /help                    this list",
-            "  /exit  /quit             leave",
-            "",
-            "the mouse: click a conversation on the left to continue it (the ☰ up there pins that list),",
-            "click a line with ▸ to open the thinking or a tool call.",
-        ]
-        self._note("\n".join(lines))
 
     # --- leaving ----------------------------------------------------------------
     def _quit(self):
@@ -1817,8 +1469,7 @@ class Gui:
             if not yes:
                 return
         try:
-            if self.agent is not None and self.current and self.conv_mod:
-                self.conv_mod.save(self.current, self.agent)
+            self.hub.save()
         except BaseException:
             pass
         try:
