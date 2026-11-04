@@ -45,7 +45,8 @@ def main():
             text = input().strip()
             if text.lower() in ("/exit", "/quit"):
                 break
-            hub.send(text, NAME)
+            if not hub.send(text, NAME):
+                print("the agent is working: this message was not sent")
     except (KeyboardInterrupt, EOFError):
         pass
     hub.save()

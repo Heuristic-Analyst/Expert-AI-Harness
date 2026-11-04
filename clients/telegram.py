@@ -7,6 +7,8 @@
 #   - while the agent works there is ONE status message: thinking, then a tool call, then its result, ... each one
 #     replaces the one before. when the answer comes the status is deleted. only answers stay
 #   - opening a conversation (or a new one), from any client, empties the chat and loads that conversation
+#   - a message sent while the agent works is dropped, and it says so
+#   - /telegram off, from any client: nothing goes to this chat anymore, until /telegram on
 #
 # what Telegram doesn't allow, and how this works with it:
 #   - a bot can't read a chat, so it keeps every message id itself: Conversations/.telegram.json
@@ -46,7 +48,11 @@ BATCH = 100                                            # messages one deleteMess
 TOO_OLD = 48 * 3600                                    # seconds after which a bot can't delete a message
 PICKER = 10                                            # conversations /open offers as buttons
 MENU = [("new", "start a new conversation"), ("open", "continue a saved conversation"),
-        ("list", "show the saved conversations"), ("sandbox", "what runs in the sandbox"), ("help", "all commands")]
+        ("list", "show the saved conversations"), ("sandbox", "what runs in the sandbox"),
+        ("ping", "is the program running"), ("telegram", "on or off: send to this chat or not"),
+        ("help", "all commands")]
+NOT_READY = "⏳ The agent is not ready, it is still working. This message was not sent."
+IS_OFF = "Telegram is off. /telegram on turns it on."
 
 
 def start(hub):
@@ -122,6 +128,7 @@ class Telegram:
         self.ledger = threading.Lock()                 # the poller and the sender both change the two below
         self.first = None                              # the message that is never deleted: the last /start
         self.ids = []                                  # every other message in the chat: [id, when it was sent]
+        self.on = True                                 # False: /telegram off, nothing goes to the chat
         self.load()
 
         self.signal = threading.Condition()            # what the sender does next:
@@ -138,7 +145,9 @@ class Telegram:
             self.hub.emit("note", text="telegram: no Owner set yet. write to your bot: it answers with your id. put "
                                        "that into settings/telegram.json as \"Owner\" and start again")
         else:
-            self.queue(self.say, "Harness is on. New conversation: " + str(self.hub.current))
+            self.hub.add_command("/telegram", self.switch, "  /telegram on|off         send to Telegram, or don't")
+            if self.on:
+                self.queue(self.say, "Harness is on. New conversation: " + str(self.hub.current))
         for job in (self.poll, self.send_loop, self.watch):
             threading.Thread(target=job, daemon=True).start()
 
@@ -147,12 +156,12 @@ class Telegram:
         try:
             with open(STATE, encoding="utf-8") as f:
                 saved = json.load(f)
-            self.first, self.ids = saved.get("first"), saved.get("ids", [])
+            self.first, self.ids, self.on = saved.get("first"), saved.get("ids", []), saved.get("on", True)
         except (OSError, ValueError):                  # no file yet, or a broken one: start without
             pass
 
     def save(self):
-        write_text(STATE, json.dumps({"first": self.first, "ids": self.ids}))
+        write_text(STATE, json.dumps({"first": self.first, "ids": self.ids, "on": self.on}))
 
     def remember(self, message_id, when=None):
         with self.ledger:
@@ -300,12 +309,38 @@ class Telegram:
             else:
                 self.say(message["text"], styled=True)
 
+    # --- /telegram on|off, from any client ---
+    def switch(self, words, source):
+        if len(words) != 2 or words[1] not in ("on", "off"):
+            self.hub.emit("reply", text="telegram is " + ("on" if self.on else "off") + ". usage: /telegram on|off")
+            return
+        wanted = words[1] == "on"
+        if wanted == self.on:
+            self.hub.emit("reply", text="telegram is already " + words[1])
+            return
+        with self.ledger:
+            self.on = wanted
+            self.save()
+        with self.signal:                              # what was waiting is not sent anymore, or is out of date
+            self.out.clear()
+            self.wanted = None
+        if wanted:                                     # things happened while it was off: start from what is true now
+            self.queue(self.clear)
+            self.queue(self.load_chat, {"why": "opened", "name": self.hub.current,
+                                        "history": self.hub.history(self.hub.current)})
+        else:
+            self.queue(self.drop_status)
+            self.queue(self.say, IS_OFF)               # the last thing it says, so the phone knows why it is quiet
+        self.hub.emit("reply", text="telegram is " + words[1])
+
     # --- what happens in the harness: the same events every client gets ---
     def watch(self):
         while True:
             event = self.events.get()
             try:
-                if self.owner:
+                if event["type"] in ("turn_start", "turn_end"):   # also while off: it may be switched on mid-turn
+                    self.working = event["type"] == "turn_start"
+                if self.owner and self.on:
                     self.on_event(event)
             except Exception as e:
                 self.hub.emit("note", text="telegram: " + type(e).__name__ + ": " + str(e))
@@ -316,7 +351,7 @@ class Telegram:
             if event["source"] != NAME:                # your own message is in the chat already
                 self.queue(self.say, "You: " + event["text"])
         elif kind == "turn_start":
-            self.working, self.last_text = True, None
+            self.last_text = None
             self.show_status("💭 Working…")
         elif kind == "thinking_start":
             self.show_status("💭 Thinking…")
@@ -339,7 +374,6 @@ class Telegram:
         elif kind == "error":
             self.queue(self.say, "⚠️ " + event["text"])
         elif kind == "turn_end":
-            self.working = False
             with self.signal:
                 self.wanted = None                     # nothing older may come after the answer
             self.queue(self.drop_status)
@@ -398,14 +432,21 @@ class Telegram:
         if when < self.started - 30:                   # sent while the program was off: not run hours later
             return
         word = text.split()[0].lower() if text.split() else ""
-        if word == "/start":
+        if not self.on:                                # off: only what answers the phone, or turns it on again
+            if word == "/telegram":
+                self.hub.send(text, NAME)
+            elif word == "/ping":
+                self.queue(self.say, self.hub.ping())
+            else:
+                self.queue(self.say, IS_OFF)
+        elif word == "/start":
             self.queue(self.say, "Connected. Just write. /help shows the commands.")
         elif not text:
             self.queue(self.say, "Only text messages work here for now.")
         elif word == "/open" and len(text.split()) == 1:
             self.queue(self.pick)
-        elif text.strip():
-            self.hub.send(text, NAME)
+        elif text.strip() and not self.hub.send(text, NAME):
+            self.queue(self.say, NOT_READY)
 
     def pick(self):
         """/open with nothing after it: the newest conversations as buttons. nobody types a timestamp on a phone"""

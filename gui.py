@@ -928,9 +928,8 @@ class Gui:
         if text.startswith("/"):                # a command also works while the agent is working (/sandbox net off)
             self.entry.delete("1.0", "end")
             self._command(text)
-        elif not self.busy:
-            self.entry.delete("1.0", "end")
-            self.hub.send(text, NAME)           # it is drawn when the event comes back, like one from any other client
+        elif not self.busy and self.hub.send(text, NAME):   # False: the agent just got busy from another client.
+            self.entry.delete("1.0", "end")     # it stays in the box. it is drawn when the event comes back
 
     def _set_input(self, on):
         # the box stays open while the agent works, so you can already write your next message. only sending waits:

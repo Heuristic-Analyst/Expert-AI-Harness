@@ -21,13 +21,17 @@ Only that account can use the bot; everyone else is ignored. It works in your pr
 | Wait | One status message shows what the agent does right now: thinking, a tool call, its result. Each replaces the one before. When the answer comes the status is deleted. **Only answers stay.** |
 | `/new`, or `/open` in any client | The chat is emptied except your `/start`, then that conversation is loaded: your messages and the answers, the newest 30 (`History`). |
 | `/open` alone | The newest conversations as buttons. |
-| A message while the agent works | It runs right after. |
+| A message while the agent works | It is dropped, not kept for later, and the bot says the agent is not ready. Send it again when it is done. Commands still work. |
+| `/ping` | Answers if the program runs, for how long, and if the agent is free. No answer: it isn't running. |
+| `/telegram off`, in any client | Nothing goes to this chat anymore. Stays off after a restart. |
+| `/telegram on`, in any client | The chat is emptied and loads the open conversation, because a lot may have happened meanwhile. |
 
 Good to know:
 
 - **Text between tool calls is a status.** When the model says "let me check that" and then calls a tool, that text is replaced like any status. Only the final answer stays. The window shows all of it.
 - **Older than 48 hours:** a bot can't delete those messages, Telegram doesn't allow it. They stay at the top of the chat, and it says so. Delete them by hand if they bother you.
 - **Rate limit:** about one message per second per chat. Everything is sent by one thread with a gap between; status changes that come faster are skipped, answers never are. If Telegram still answers "too many requests", it waits as long as Telegram says. Loading a long conversation takes about a second per message.
+- **While it is off** the bot only answers `/ping` and `/telegram on`. Anything else gets "Telegram is off", and doesn't reach the agent.
 - **Messages sent while the program is off** are not run later: they stay in the chat, and nothing happens.
 - **Message ids** are in `Conversations/.telegram.json`, because a bot can't ask Telegram what is in a chat. Delete that file and the bot forgets the old messages: they stay in the chat, and it can't delete them anymore.
 - **Telegram sees everything** you and the agent say here, tool output too: bot chats aren't end-to-end encrypted. And whoever gets your token, or your Telegram account, can drive the agent.
@@ -54,7 +58,9 @@ def start(hub):
     return True
 ```
 
-To send something the user wrote: `hub.send(text, "echo")`. That is the whole connection.
+To send something the user wrote: `hub.send(text, "echo")`. That is the whole connection. It returns `False` if the message was dropped because the agent is working: then tell your user.
+
+A client can add a command of its own, which then works in every client: `hub.add_command("/echo", run, "  /echo   what it does")`. `run(words, source)` is called right away, so keep it quick. `/telegram` in `telegram.py` is an example.
 
 The rules:
 

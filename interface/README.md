@@ -30,7 +30,7 @@ Every client gets every event, in the same order, whoever caused it. So a client
 
 | Call | What it does |
 |---|---|
-| `send(text, source)` | **The one most clients need.** Anything the user typed: a text starting with `/` is a command, anything else a message for the agent. A message sent while the agent works comes right after it. |
+| `send(text, source)` | **The one most clients need.** Anything the user typed: a text starting with `/` is a command, anything else a message for the agent. Returns `False` if the message was dropped: while the agent works nothing is kept for later. Only the client that sent it knows, and it tells its user. |
 | `subscribe()` | A new queue, where every event lands from now on. `unsubscribe(queue)` ends it. |
 | `new_conversation(source)` | A new conversation, in every client. |
 | `open_conversation(name, source)` | Continue a saved one, in every client. |
@@ -41,12 +41,14 @@ Every client gets every event, in the same order, whoever caused it. So a client
 | `history(name)` | Everything ever said in it, as messages, also across checkpoints. |
 | `chat(history)` | A history as a plain chat, without tools and thinking: `[{"role": "user" or "assistant", "text": ...}]`. |
 | `busy()`, `tokens()`, `sandbox_line()`, `browser_view()`, `current` | How things stand: the agent is working; the size of the conversation; what runs in the sandbox; the link to the browser's screen while it is open; the open conversation. |
+| `ping()` | One line: the program runs, for how long, and whether the agent is free. |
+| `add_command(word, run, line)` | Add a command of your own, like `/telegram`. It works in every client. `run(words, source)`, `line` is for `/help`. |
 | `save()` | Save the open conversation, when leaving. |
 | `start()` | Starts the harness. `gui.py` and `serve.py` do this; a client in `clients/` never needs to. |
 
 ## Commands
 
-The same in every client, through `send`: `/new`, `/open <name>`, `/list`, `/rename [old] <new>`, `/delete [name]`, `/sandbox`, `/sandbox net on|off`, `/sandbox close`, `/help`.
+The same in every client, through `send`: `/new`, `/open <name>`, `/list`, `/rename [old] <new>`, `/delete [name]`, `/sandbox`, `/sandbox net on|off`, `/sandbox close`, `/ping`, `/help`, plus what clients add (`/telegram on|off`).
 
 While the agent works, `/new`, `/open`, `/rename` and `/delete` are refused, with a reply saying so: a conversation can't be swapped while the agent works in it. The others work at any time, also `/sandbox net off`.
 

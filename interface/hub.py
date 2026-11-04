@@ -25,6 +25,7 @@
 import os
 import re
 import json
+import time
 import queue
 import atexit
 import threading
@@ -43,6 +44,7 @@ HELP = """commands:
   /sandbox                 what runs in the sandbox, and every sandbox
   /sandbox net on|off      the sandbox's internet
   /sandbox close           stop the sandbox
+  /ping                    is the program running, and is the agent free
   /help                    this list"""
 
 
@@ -91,6 +93,8 @@ class Hub:
         self.current = None                    # the name of the open conversation
         self.counts = {}                       # conversation -> (its state.json's time and size, how many messages)
         self.view_hosts = {}                   # container -> its hostname ("" = unknown, None = being asked)
+        self.extra = {}                        # commands the clients added: "/telegram" -> (its function, its help)
+        self.began = time.time()               # when this program started
 
     # --- what happens: every client reads this ---
     def subscribe(self):
@@ -237,20 +241,19 @@ class Hub:
     # --- talking to it: the one call most clients need ---
     def send(self, text, source):
         """anything the user typed, in any client. source: who you are, e.g. "telegram". a text starting with / is a
-        command, anything else a message for the agent. a message sent while the agent works comes right after it"""
+        command, anything else a message for the agent. returns False if it was NOT taken: while the agent works a
+        message is dropped, never kept for later. the client that sent it tells its user, nobody else hears of it"""
         text = str(text).strip()
         if not text:
-            return
+            return True
         if text.startswith("/"):
             self.command(text, source)
-        elif not self.started:
-            self.emit("reply", text="one moment: the harness is still starting")
-        else:
-            with self.guard:
-                waiting = self.pending > 0
-                self.add_job(lambda: self.turn(text, source))
-            if waiting:
-                self.emit("reply", text="the agent is working: your message comes right after")
+            return True
+        with self.guard:
+            if not self.started or self.pending:
+                return False
+            self.add_job(lambda: self.turn(text, source))
+        return True
 
     def turn(self, text, source):
         """one message to the agent, on the worker thread"""
@@ -301,12 +304,27 @@ class Hub:
             self.delete_command(words, source)
         elif what == "/sandbox":
             self.sandbox_command(words)
+        elif what == "/ping":
+            self.emit("reply", text=self.ping())
         elif what == "/help":
-            self.emit("reply", text=HELP)
+            self.emit("reply", text="\n".join([HELP] + [line for _, line in self.extra.values()]))
+        elif what in self.extra:
+            self.extra[what][0](words, source)
         elif what in ("/exit", "/quit"):
             self.emit("reply", text="that only works on the computer itself")
         else:
             self.emit("reply", text="command not found: " + words[0] + "    (try /help)")
+
+    def add_command(self, word, run, line):
+        """a client adds a command of its own, e.g. "/telegram". it then works in every client. run(words, source) is
+        called on the caller's thread, so it must be quick. line: its line for /help"""
+        self.extra[word] = (run, line)
+
+    def ping(self):
+        """one line: the program is alive, for how long, and whether the agent is free"""
+        minutes = int(time.time() - self.began) // 60
+        return ("pong  ·  running for " + str(minutes // 60) + "h " + str(minutes % 60) + "m  ·  agent "
+                + ("working" if self.busy() else "free") + "  ·  conversation " + str(self.current))
 
     def delete_command(self, words, source):
         """/delete [name] only asks. /delete [name] yes deletes: there is no undo, and every client has a keyboard"""
