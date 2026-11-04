@@ -6,4 +6,5 @@ run either "main.py" for cli version or "gui.py" (files are not shown in gui, st
 
 Difference to Advanced AI Harness version:
 - Build communication layer between program and gui, so other "tools" can also use it, such as a telegram tool, so if one wants one can chat with it via telegram. all the changes, texts, commands, etc are visible everywhere at once
-- Building a github tool so it can publish its projects on its own github account.
+- Building a github tool so it can publish its projects on its own github account
+- Also bulding a swarm cabablility, so it can spin up its own subagents to divide work in parallel and work faster.
