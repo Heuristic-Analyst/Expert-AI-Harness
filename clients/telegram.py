@@ -18,7 +18,8 @@
 #   - a bot can't delete a message older than 48 hours. those stay in the chat, and it says so
 #   - an empty chat throws you out to the "Start" button, so the last /start is never deleted
 #
-# only your own account can use it: "Owner" in settings/telegram.json. everyone else is ignored.
+# only your own account can use it: "Owner" in settings/telegram.json. everyone else is ignored, and it never writes
+# to anyone but the Owner. not even while setting up: then it shows who wrote in your window or terminal, not in Telegram.
 
 import os
 import re
@@ -142,8 +143,8 @@ class Telegram:
 
     def run(self):
         if not self.owner:
-            self.hub.emit("note", text="telegram: no Owner set yet. write to your bot: it answers with your id. put "
-                                       "that into settings/telegram.json as \"Owner\" and start again")
+            self.hub.emit("note", text="telegram: no Owner set yet. write to your bot: your user id appears here. put "
+                                       "it into settings/telegram.json as \"Owner\" and start again")
         else:
             self.hub.add_command("/telegram", self.switch, "  /telegram on|off         send to Telegram, or don't")
             if self.on:
@@ -412,10 +413,13 @@ class Telegram:
 
     def on_message(self, message):
         user = (message.get("from") or {}).get("id")
-        if not self.owner:                             # not set up yet: nothing reaches the agent, it only says the id
-            self.call("sendMessage", chat_id=message["chat"]["id"],
-                      text="Your user id is " + str(user) + ". Put it into settings/telegram.json as \"Owner\", then "
-                           "start the program again.")
+        if not self.owner:                             # not set up yet: nothing reaches the agent, nothing is sent back.
+            sender = message.get("from") or {}         # the id shows on the computer, where only you can see it
+            who = " ".join(str(sender.get(k)) for k in ("first_name", "last_name") if sender.get(k)) or "someone"
+            if sender.get("username"):
+                who += " (@" + str(sender["username"]) + ")"
+            self.hub.emit("note", text="telegram: " + who + " wrote to the bot, user id " + str(user) + ". if that is "
+                                       "you, put it into settings/telegram.json as \"Owner\" and start again")
             return
         if user != self.owner or message["chat"]["id"] != self.owner:   # only you, only your private chat with the bot
             return
@@ -458,7 +462,9 @@ class Telegram:
                                                       for name in names])
 
     def on_button(self, query):
+        if not self.owner or (query.get("from") or {}).get("id") != self.owner:
+            return                                     # not you: not even the little "done" a button gets
         self.call("answerCallbackQuery", callback_query_id=query["id"])
         data = query.get("data") or ""
-        if (query.get("from") or {}).get("id") == self.owner and data.startswith("open:"):
+        if data.startswith("open:"):
             self.hub.open_conversation(data[len("open:"):], NAME)

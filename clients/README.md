@@ -8,11 +8,13 @@ Chat with the harness from your phone. The program must run on your computer (`p
 
 1. In Telegram, write to **@BotFather**, send `/newbot`, and follow it. It gives you a token.
 2. Put it into `.env`: `TELEGRAM_API_KEY=<the token>`
-3. Start the program, open your bot, and press **Start**. It answers with your user id.
+3. Start the program, open your bot, and press **Start**. The bot doesn't answer: your user id appears in the window (or the terminal), with your name next to it.
 4. Put that id into `settings/telegram.json` as `"Owner"`, and start the program again.
 5. Press **Start** once more (or send `/start`). That message is the one that stays in the chat.
 
-Only that account can use the bot; everyone else is ignored. It works in your private chat with the bot, not in groups.
+Only that account can use the bot. Everyone else is ignored, and the bot never writes to anyone but you, not even during setup. It works in your private chat with the bot, not in groups.
+
+Anyone can still find your bot by its name and write to it: Telegram allows that for every bot. They just get no answer. To also stop it being added to groups, send **@BotFather** `/setjoingroups`, pick your bot, and choose **Disable**.
 
 | What you do | What happens |
 |---|---|
