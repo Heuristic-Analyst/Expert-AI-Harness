@@ -10,7 +10,8 @@ Real git and the whole GitHub API work inside your sandbox. You have no token, a
 ## Start
 
 1. Open a sandbox with git and python3 (e.g. `python`), with the project the work belongs to mounted.
-2. `github_open`. The network can stay off: GitHub doesn't use it.
+2. The sandbox's network must be on: GitHub follows it. Only the user can switch it on, so if it is off, ask them to send `/sandbox net on`.
+3. `github_open`.
 
 ## git
 
@@ -39,6 +40,7 @@ Only what you do from the sandbox itself works: a web page in the browser can't 
 ## When something is off
 
 - "connection refused": the sandbox restarted. `github_open` again.
+- 503, "network is off": the user switched the network off. Ask them to switch it on, or stop there.
 - 403 or 404 from GitHub: the user's token doesn't allow it. Tell them what it needs. There is no way around that.
 
 ## Rules

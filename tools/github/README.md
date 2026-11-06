@@ -7,7 +7,9 @@ Real `git` and the whole GitHub API inside the sandbox, and no token in there.
 | `github_open` | Starts the gateway for this sandbox, and sets git up to use it. |
 | `github_close` | Ends it. It also ends with the sandbox. |
 
-Then the agent uses GitHub like anyone would: `git clone https://github.com/...`, `git push`, `curl http://127.0.0.1:8484/api/...`. It works with the sandbox's network off.
+Then the agent uses GitHub like anyone would: `git clone https://github.com/...`, `git push`, `curl http://127.0.0.1:8484/api/...`.
+
+It follows the sandbox's network: only while it is on (`/sandbox net on`, which only you can do). With `/sandbox net off` every request is refused at once, also in the middle of a session.
 
 ## Why the token can't be found
 
@@ -15,7 +17,7 @@ A token inside a sandbox can always be read, however it is hidden: the agent is 
 
 ```
 sandbox           git push  ->  127.0.0.1:8484  (a tiny listener, with no secret)
-                                     |  through podman exec, no network needed
+                                     |  through podman exec, only while the network is on
 your computer     the gateway: drops every login in the request, adds the token
                                      |  only to github.com and api.github.com
 GitHub
@@ -48,4 +50,4 @@ The agent can't **know** the token, but it can **use** it: whatever the token al
 - **Leave *Administration* off:** that is deleting repos and changing their settings.
 - **Protect `main` on GitHub** (Settings → Rules), so nothing reaches it without a pull request.
 
-**The sandbox's network doesn't cover this.** With `/sandbox net off` the agent still reaches GitHub once it called `github_open`, and only GitHub. Whoever has a token here accepts that: remove `GITHUB_API_KEY` from `.env` to switch all of it off.
+**The network switch covers it.** With `/sandbox net off` there is no GitHub either. Remove `GITHUB_API_KEY` from `.env` to switch it off for good. Note that the `browser` sandbox starts with its network on (its `sandbox.json`), so GitHub works there from the start.
