@@ -18,6 +18,9 @@ def run(agent):
     if not _gateway.token():
         return ("GitHub is not set up: there is no GITHUB_API_KEY in .env on the user's computer. tell the user "
                 "(tools/github/README.md). never ask them for a token or password in the chat")
+    if getattr(sandbox, "github_allowed", False) is not True:
+        return ("GitHub is switched off by the user. only they can switch it on: ask them to send /github on, then "
+                "call github_open again. (in main.py there is no such switch, so GitHub stays off there)")
     if not sandbox.network:
         return ("the sandbox's network is off, and GitHub follows it. only the user can switch it on: ask them to "
                 "send /sandbox net on, then call github_open again")

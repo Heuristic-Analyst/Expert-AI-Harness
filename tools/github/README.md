@@ -9,7 +9,14 @@ Real `git` and the whole GitHub API inside the sandbox, and no token in there.
 
 Then the agent uses GitHub like anyone would: `git clone https://github.com/...`, `git push`, `curl http://127.0.0.1:8484/api/...`.
 
-It follows the sandbox's network: only while it is on (`/sandbox net on`, which only you can do). With `/sandbox net off` every request is refused at once, also in the middle of a session.
+Two switches, both yours, and both must be on:
+
+| Command | What it does |
+|---|---|
+| `/github on` / `/github off` | GitHub allowed or not. **Off every time the program starts.** |
+| `/sandbox net on` / `off` | The sandbox's network. GitHub follows it too. |
+
+Either one off, and every request is refused at once, also in the middle of a session. The agent is told when you switch. It can't switch either one itself. `/github` works in the window, Telegram and `serve.py` (it is `clients/github_switch.py`). `main.py` doesn't have it, so there GitHub stays off.
 
 ## Why the token can't be found
 

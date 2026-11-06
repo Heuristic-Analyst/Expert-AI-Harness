@@ -48,7 +48,7 @@ Every client gets every event, in the same order, whoever caused it. So a client
 
 ## Commands
 
-The same in every client, through `send`: `/new`, `/open <name>`, `/list`, `/rename [old] <new>`, `/delete [name]`, `/sandbox`, `/sandbox net on|off`, `/sandbox close`, `/ping`, `/help`, plus what clients add (`/telegram on|off`).
+The same in every client, through `send`: `/new`, `/open <name>`, `/list`, `/rename [old] <new>`, `/delete [name]`, `/sandbox`, `/sandbox net on|off`, `/sandbox close`, `/ping`, `/help`, plus what clients add (`/telegram on|off`, `/github on|off`).
 
 While the agent works, `/new`, `/open`, `/rename` and `/delete` are refused, with a reply saying so: a conversation can't be swapped while the agent works in it. The others work at any time, also `/sandbox net off`.
 

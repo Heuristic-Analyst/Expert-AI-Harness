@@ -62,6 +62,8 @@ def start(hub):
 
 To send something the user wrote: `hub.send(text, "echo")`. That is the whole connection. It returns `False` if the message was dropped because the agent is working: then tell your user.
 
+A file in here can also be no chat at all, and only add a command: `github_switch.py` adds `/github on|off`.
+
 A client can add a command of its own, which then works in every client: `hub.add_command("/echo", run, "  /echo   what it does")`. `run(words, source)` is called right away, so keep it quick. `/telegram` in `telegram.py` is an example.
 
 The rules:

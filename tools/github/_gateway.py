@@ -10,8 +10,8 @@
 #        |    only ever to github.com and api.github.com: there is no way to name another host
 #   GitHub
 #
-# it follows the sandbox's network: with /sandbox net off every request is refused, checked anew for each one. so
-# "network off" means no internet at all, GitHub included, like everywhere else in the harness.
+# two switches, both the user's, both checked anew for each request: /github on|off (clients/github_switch.py, off at
+# every start), and the sandbox's network (/sandbox net on|off). either one off: every request is refused.
 # what comes back goes through scrub, so even an answer with the token in it reaches the sandbox without it.
 # anything can come out of a sandbox, also through this stream: everything from it is checked here, nothing is trusted.
 # a web page in the browser sandbox could also reach 127.0.0.1:8484, so requests from a browser are refused.
@@ -227,7 +227,9 @@ class Connection:
 
     def serve(self):
         method, path, headers = self.read_head()
-        sandbox = self.gateway.sandbox                 # the network is the user's switch: asked anew for each request
+        sandbox = self.gateway.sandbox                 # the user's two switches: asked anew for each request
+        if getattr(sandbox, "github_allowed", False) is not True:
+            return self.refuse(503, "the user switched GitHub off. only the user can switch it on (/github on)")
         if not sandbox.network or sandbox.container != self.gateway.container:
             return self.refuse(503, "the sandbox's network is off. only the user can switch it on (/sandbox net on)")
         # a web page in a browser in this sandbox can reach this port too. it must not get to use the token
