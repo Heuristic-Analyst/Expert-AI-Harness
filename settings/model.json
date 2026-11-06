@@ -3,5 +3,5 @@
   "Stream": true,
   "Effort": "high",
   "PrintThinking": true,
-  "ContextLimit": 100000
+  "ContextLimit": 500000
 }
