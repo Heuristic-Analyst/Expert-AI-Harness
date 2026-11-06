@@ -13,4 +13,5 @@ Difference to Basic AI Harness version:
 - per-sandbox settings you write and the agent can't change: memory, cpus, GPU, a "view" port (Sandboxes/README.md)
 - files in Shared Folder can't be executed directly, only through an interpreter (python x.py), and only inside the sandbox
 - network can only be enabled or disabled by the user using /sandbox net on or off
+- GitHub in the sandbox: real git and the whole API, with your token outside of it, so the agent can't get it (tools/github/README.md)
 - an interface layer (`interface/`): the window, Telegram and anything else are clients of it, and every client sees everything live. a new client is one file in `clients/`, nothing else changes (interface/README.md, clients/README.md)

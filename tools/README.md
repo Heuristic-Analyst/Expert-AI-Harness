@@ -10,6 +10,7 @@ Everything the agent can *do* is a tool, and every tool is one Python file in he
 | `checkpoint` | `basic/checkpoint.py` | Saves the model's checkpoint as `checkpoint.md`, empties the conversation and puts the checkpoint into the system prompt. Only works when the program asked for it: when the conversation got too full (`CHECKPOINT_AT`, `EMERGENCY_AT` in `config.py`). The log and the saved results stay. |
 | `read_result` | `results/read_result.py` | Shows **one** part of a saved result (see "Long results" below). Never more than one, so a huge result can't fill the context. |
 | `search_result` | `results/search_result.py` | `grep` for one saved result: every matching line with its part and line number. With grep's options: regex, ignore case, whole word, invert, lines before/after, only the matched piece, count, max count. |
+| `github_open`, `github_close` | `github/` | Real git and the GitHub API inside the sandbox, with the token outside of it. See `github/README.md`. |
 | `check_sandbox` | `sandbox/check_sandbox.py` | Every sandbox with its whole Containerfile and its settings (`sandbox.json`), and which one runs here. Changes nothing. |
 | `open_sandbox` | `sandbox/open_sandbox.py` | Builds and starts a sandbox for this instance, network off, optionally with projects mounted right away. |
 | `close_sandbox` | `sandbox/close_sandbox.py` | Stops it. Its projects are free for other instances again. |

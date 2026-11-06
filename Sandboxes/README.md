@@ -4,7 +4,7 @@ A sandbox is a throwaway Linux container ([Podman](https://podman.io)) where the
 
 | Sandbox | What it is |
 |---|---|
-| `python` | Python 3.12 with numpy, pandas and matplotlib. The one notebooks need. |
+| `python` | Python 3.12 with numpy, pandas, matplotlib, git and curl. The one notebooks need. |
 | `ubuntu` | Plain Ubuntu 24.04. No Python. |
 | `ai-lab` | PyTorch with CUDA, transformers and friends. Gets your NVIDIA GPU (`sandbox.json`). |
 | `browser` | Chromium for the agent, with a screen you can watch. Works with the `Browser` project (`Shared Folder/Browser`). |
